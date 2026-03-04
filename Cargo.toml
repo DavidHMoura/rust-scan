@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4.4", features = ["derive"] }
+ipnet = "2.9"
