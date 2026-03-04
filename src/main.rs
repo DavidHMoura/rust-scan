@@ -3,11 +3,14 @@ use indicatif::{ProgressBar, ProgressStyle};
 use inquire::{CustomType, Text};
 use ipnet::IpNet;
 use serde::Serialize;
+use std::error::Error;
 use std::fs;
 use std::net::IpAddr;
+use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio::time::timeout;
 
 #[derive(Serialize)]
@@ -44,22 +47,18 @@ struct ScanConfig {
     output: Option<String>,
 }
 
-fn parse_targets(target: &str) -> Result<Vec<IpAddr>, String> {
+fn parse_targets(target: &str) -> Result<Vec<IpAddr>, Box<dyn Error>> {
     if target.contains('/') {
-        match target.parse::<IpNet>() {
-            Ok(net) => Ok(net.hosts().collect()),
-            Err(_) => Err("Invalid CIDR format.".to_string()),
-        }
+        let net = target.parse::<IpNet>()?;
+        Ok(net.hosts().collect())
     } else {
-        match target.parse::<IpAddr>() {
-            Ok(ip) => Ok(vec![ip]),
-            Err(_) => Err("Invalid IP format.".to_string()),
-        }
+        let ip = target.parse::<IpAddr>()?;
+        Ok(vec![ip])
     }
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn Error>> {
     let config = if std::env::args().len() > 1 {
         let args = Args::parse();
         ScanConfig {
@@ -83,27 +82,22 @@ async fn main() {
 
         let target = Text::new("Target (IP or CIDR, e.g., 127.0.0.1 or 192.168.0.0/24):")
             .with_default("127.0.0.1")
-            .prompt()
-            .unwrap();
+            .prompt()?;
 
         let timeout = CustomType::<u64>::new("Connection timeout (ms):")
             .with_default(200)
-            .prompt()
-            .unwrap();
+            .prompt()?;
 
         let start_port = CustomType::<u16>::new("Start port:")
             .with_default(1)
-            .prompt()
-            .unwrap();
+            .prompt()?;
 
         let end_port = CustomType::<u16>::new("End port:")
             .with_default(1024)
-            .prompt()
-            .unwrap();
+            .prompt()?;
 
         let output_str = Text::new("Save to JSON? (Leave blank to skip, or enter filename, e.g., scan.json):")
-            .prompt()
-            .unwrap();
+            .prompt()?;
 
         let output = if output_str.trim().is_empty() {
             None
@@ -120,35 +114,31 @@ async fn main() {
         }
     };
 
-    let (tx, mut rx) = mpsc::channel(100);
-
-    let ips_to_scan = match parse_targets(&config.target) {
-        Ok(ips) => ips,
-        Err(e) => {
-            eprintln!("Fatal Error: {}", e);
-            std::process::exit(1);
-        }
-    };
-
+    let ips_to_scan = parse_targets(&config.target)?;
     let total_ports = config.end_port - config.start_port + 1;
     let total_tasks = (ips_to_scan.len() as u64) * (total_ports as u64);
 
     println!("\nStarting scan on {} targets", ips_to_scan.len());
     println!("Timeout: {}ms | Total connections: {}", config.timeout, total_tasks);
 
+    let (tx, mut rx) = mpsc::channel(100);
     let pb = ProgressBar::new(total_tasks);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ports ({eta})")
-            .expect("Failed to set progress bar template")
+            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ports ({eta})")?
             .progress_chars("#>-"),
     );
+
+    let concurrency_limit = 1000;
+    let semaphore = Arc::new(Semaphore::new(concurrency_limit));
 
     for ip in ips_to_scan {
         for port in config.start_port..=config.end_port {
             let tx = tx.clone();
             let pb_clone = pb.clone();
             let timeout_ms = config.timeout;
+            
+            let permit = semaphore.clone().acquire_owned().await?;
 
             tokio::spawn(async move {
                 if scan_port(ip, port, timeout_ms).await.is_ok() {
@@ -156,6 +146,8 @@ async fn main() {
                     pb_clone.println(format!("  [+] {} - Port {} [OPEN]", ip, port));
                 }
                 pb_clone.inc(1);
+                
+                drop(permit); 
             });
         }
     }
@@ -178,11 +170,19 @@ async fn main() {
         println!("No open ports found.");
     } else {
         if let Some(file_path) = config.output {
-            let json_data = serde_json::to_string_pretty(&open_ports_data).expect("Error serializing JSON");
-            fs::write(&file_path, json_data).expect("Error saving JSON file to disk");
-            println!("JSON report successfully saved to: {}", file_path);
+
+            let path = Path::new(&file_path);
+            if let Some(safe_name) = path.file_name() {
+                let json_data = serde_json::to_string_pretty(&open_ports_data)?;
+                fs::write(safe_name, json_data)?;
+                println!("JSON report successfully saved to: {:?}", safe_name);
+            } else {
+                eprintln!("Security Block: Invalid file path provided. Report not saved.");
+            }
         }
     }
+
+    Ok(())
 }
 
 async fn scan_port(ip: IpAddr, port: u16, timeout_ms: u64) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
