@@ -7,5 +7,5 @@ A high-performance, asynchronous TCP port scanner built with Rust and Tokio. Foc
 - [x] Implement Single IP Scanning (Asynchronous)
 - [x] Custom Timeout Handling (CLI Arguments)
 - [x] Multi-IP Range Support
-- [ ] Terminal User Interface (TUI) / Progress Bar
-- [ ] JSON Export for Reports
+- [x] Terminal User Interface (TUI) / Progress Bar
+- [x] JSON Export for Reports
