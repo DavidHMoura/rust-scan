@@ -18,7 +18,7 @@ A high-performance, asynchronous TCP port scanner built with Rust and Tokio. Des
 ### Build from Source
 1. Clone the repository:
    ```bash
-   git clone <your-repository-url>
+   git clone <https://github.com/DavidHMoura/rust-scan>
    cd rusty_scanner
 Compile the optimized release binary:
 
