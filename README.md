@@ -108,7 +108,7 @@ The receiver task is spawned before the producer loop begins. This is the critic
 ### Build from Source
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/DavidHMoura/rust-scan
 cd rust-scan-main
 cargo build --release
 ```
